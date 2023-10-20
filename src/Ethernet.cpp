@@ -20,7 +20,6 @@
 
 #include <Arduino.h>
 #include "Ethernet.h"
-#include "utility/w5100.h"
 #include "Dhcp.h"
 
 IPAddress EthernetClass::_dnsServerAddress;
@@ -32,7 +31,7 @@ int EthernetClass::begin(uint8_t *mac, unsigned long timeout, unsigned long resp
 	_dhcp = &s_dhcp;
 
 	// Initialise the basic info
-	if (W5100.init() == 0) return 0;
+	if (!W5100.isInitialized()) return 0;
 	SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
 	W5100.setMACAddress(mac);
 	W5100.setIPAddress(IPAddress(0,0,0,0).raw_address());
@@ -80,7 +79,7 @@ void EthernetClass::begin(uint8_t *mac, IPAddress ip, IPAddress dns, IPAddress g
 
 void EthernetClass::begin(uint8_t *mac, IPAddress ip, IPAddress dns, IPAddress gateway, IPAddress subnet)
 {
-	if (W5100.init() == 0) return;
+	if (!W5100.isInitialized()) return;
 	SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
 	W5100.setMACAddress(mac);
 	W5100.setIPAddress(ip.raw_address());
@@ -90,9 +89,10 @@ void EthernetClass::begin(uint8_t *mac, IPAddress ip, IPAddress dns, IPAddress g
 	_dnsServerAddress = dns;
 }
 
-void EthernetClass::init(uint8_t sspin)
+bool EthernetClass::init(uint8_t sspin, SPIClass* spi, W5x00HardwareMask hw_mask)
 {
 	W5100.setSS(sspin);
+	return W5100.init(spi, hw_mask);
 }
 
 EthernetLinkStatus EthernetClass::linkStatus()

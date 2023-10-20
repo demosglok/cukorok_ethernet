@@ -122,11 +122,18 @@ enum W5100Linkstatus {
   LINK_ON,
   LINK_OFF
 };
+enum  W5x00HardwareMask : uint8_t {
+  W5_HARDWARE_W5100 = 0x01,
+  W5_HARDWARE_W5200 = 0x02,
+  W5_HARDWARE_W5500 = 0x04,
+  W5_HARDWARE_ALL = 0x07
+};
 
 class W5100Class {
 
 public:
-  static uint8_t init(void);
+  static bool init(SPIClass* spi = nullptr, W5x00HardwareMask hardware_mask = W5x00HardwareMask::W5_HARDWARE_ALL);
+  static inline bool isInitialized() {return initialized;}
 
   inline void setGatewayIp(const uint8_t * addr) { writeGAR(addr); }
   inline void getGatewayIp(uint8_t * addr) { readGAR(addr); }
@@ -219,6 +226,7 @@ public:
   // W5100 Socket registers
   // ----------------------
 private:
+  static SPIClass* _spi;
   static uint16_t CH_BASE(void) {
     //if (chip == 55) return 0x1000;
     //if (chip == 52) return 0x4000;
@@ -298,6 +306,7 @@ public:
 private:
   static uint8_t chip;
   static uint8_t ss_pin;
+  static bool initialized;
   static uint8_t softReset(void);
   static uint8_t isW5100(void);
   static uint8_t isW5200(void);
