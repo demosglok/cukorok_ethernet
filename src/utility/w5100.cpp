@@ -50,9 +50,11 @@
 
 
 // W5100 controller instance
+SPIClass* W5100Class::_spi = nullptr;
 uint8_t  W5100Class::chip = 0;
 uint8_t  W5100Class::CH_BASE_MSB;
 uint8_t  W5100Class::ss_pin = SS_PIN_DEFAULT;
+bool  W5100Class::initialized = false;
 #ifdef ETHERNET_LARGE_BUFFERS
 uint16_t W5100Class::SSIZE = 2048;
 uint16_t W5100Class::SMASK = 0x07FF;
@@ -83,12 +85,10 @@ W5100Class W5100;
 #endif
 
 
-uint8_t W5100Class::init(void)
+bool W5100Class::init(SPIClass* spi, W5x00HardwareMask hardware_mask)
 {
-	static bool initialized = false;
 	uint8_t i;
-
-	if (initialized) return 1;
+	if (initialized) return true;
 
 	// Many Ethernet shields have a CAT811 or similar reset chip
 	// connected to W5100 or W5200 chips.  The W5200 will not work at
@@ -101,16 +101,22 @@ uint8_t W5100Class::init(void)
 	delay(560);
 	//Serial.println("w5100 init");
 
-	SPI.begin();
+	if(spi != nullptr) {
+		_spi = spi; // expect it to be started with "begin"
+	} else {
+		_spi = &SPI;
+
+		_spi->begin();
+	}
 	initSS();
 	resetSS();
-	SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
+	_spi->beginTransaction(SPI_ETHERNET_SETTINGS);
 
 	// Attempt W5200 detection first, because W5200 does not properly
 	// reset its SPI state when CS goes high (inactive).  Communication
 	// from detecting the other chips can leave the W5200 in a state
 	// where it won't recover, unless given a reset pulse.
-	if (isW5200()) {
+	if ((hardware_mask & W5x00HardwareMask::W5_HARDWARE_W5200) && isW5200()) {
 		CH_BASE_MSB = 0x40;
 #ifdef ETHERNET_LARGE_BUFFERS
 #if MAX_SOCK_NUM <= 1
@@ -135,7 +141,7 @@ uint8_t W5100Class::init(void)
 	// Try W5500 next.  WIZnet finally seems to have implemented
 	// SPI well with this chip.  It appears to be very resilient,
 	// so try it after the fragile W5200
-	} else if (isW5500()) {
+	} else if ((hardware_mask & W5x00HardwareMask::W5_HARDWARE_W5500) && isW5500()) {
 		CH_BASE_MSB = 0x10;
 #ifdef ETHERNET_LARGE_BUFFERS
 #if MAX_SOCK_NUM <= 1
@@ -162,7 +168,7 @@ uint8_t W5100Class::init(void)
 	// it recovers from "hearing" unsuccessful W5100 or W5200
 	// communication.  W5100 is also the only chip without a VERSIONR
 	// register for identification, so we check this last.
-	} else if (isW5100()) {
+	} else if ((hardware_mask & W5x00HardwareMask::W5_HARDWARE_W5100) && isW5100()) {
 		CH_BASE_MSB = 0x04;
 #ifdef ETHERNET_LARGE_BUFFERS
 #if MAX_SOCK_NUM <= 1
@@ -187,14 +193,14 @@ uint8_t W5100Class::init(void)
 	// that's heard other SPI communication if its chip select
 	// pin wasn't high when a SD card or other SPI chip was used.
 	} else {
-		//Serial.println("no chip :-(");
+		Serial.println("no W5x00 chip :-(");
 		chip = 0;
-		SPI.endTransaction();
-		return 0; // no known chip is responding :-(
+		_spi->endTransaction();
+		return false; // no known chip is responding :-(
 	}
-	SPI.endTransaction();
+	_spi->endTransaction();
 	initialized = true;
-	return 1; // successful init
+	return true; // successful init
 }
 
 // Soft reset the WIZnet chip, by writing to its MR register reset bit
@@ -276,15 +282,15 @@ W5100Linkstatus W5100Class::getLinkStatus()
 	if (!init()) return UNKNOWN;
 	switch (chip) {
 	  case 52:
-		SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
+		_spi->beginTransaction(SPI_ETHERNET_SETTINGS);
 		phystatus = readPSTATUS_W5200();
-		SPI.endTransaction();
+		_spi->endTransaction();
 		if (phystatus & 0x20) return LINK_ON;
 		return LINK_OFF;
 	  case 55:
-		SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
+		_spi->beginTransaction(SPI_ETHERNET_SETTINGS);
 		phystatus = readPHYCFGR_W5500();
-		SPI.endTransaction();
+		_spi->endTransaction();
 		if (phystatus & 0x01) return LINK_ON;
 		return LINK_OFF;
 	  default:
@@ -299,11 +305,11 @@ uint16_t W5100Class::write(uint16_t addr, const uint8_t *buf, uint16_t len)
 	if (chip == 51) {
 		for (uint16_t i=0; i<len; i++) {
 			setSS();
-			SPI.transfer(0xF0);
-			SPI.transfer(addr >> 8);
-			SPI.transfer(addr & 0xFF);
+			_spi->transfer(0xF0);
+			_spi->transfer(addr >> 8);
+			_spi->transfer(addr & 0xFF);
 			addr++;
-			SPI.transfer(buf[i]);
+			_spi->transfer(buf[i]);
 			resetSS();
 		}
 	} else if (chip == 52) {
@@ -312,13 +318,13 @@ uint16_t W5100Class::write(uint16_t addr, const uint8_t *buf, uint16_t len)
 		cmd[1] = addr & 0xFF;
 		cmd[2] = ((len >> 8) & 0x7F) | 0x80;
 		cmd[3] = len & 0xFF;
-		SPI.transfer(cmd, 4);
+		_spi->transfer(cmd, 4);
 #ifdef SPI_HAS_TRANSFER_BUF
-		SPI.transfer(buf, NULL, len);
+		_spi->transfer(buf, NULL, len);
 #else
 		// TODO: copy 8 bytes at a time to cmd[] and block transfer
 		for (uint16_t i=0; i < len; i++) {
-			SPI.transfer(buf[i]);
+			_spi->transfer(buf[i]);
 		}
 #endif
 		resetSS();
@@ -366,15 +372,15 @@ uint16_t W5100Class::write(uint16_t addr, const uint8_t *buf, uint16_t len)
 			for (uint8_t i=0; i < len; i++) {
 				cmd[i + 3] = buf[i];
 			}
-			SPI.transfer(cmd, len + 3);
+			_spi->transfer(cmd, len + 3);
 		} else {
-			SPI.transfer(cmd, 3);
+			_spi->transfer(cmd, 3);
 #ifdef SPI_HAS_TRANSFER_BUF
-			SPI.transfer(buf, NULL, len);
+			_spi->transfer(buf, NULL, len);
 #else
 			// TODO: copy 8 bytes at a time to cmd[] and block transfer
 			for (uint16_t i=0; i < len; i++) {
-				SPI.transfer(buf[i]);
+				_spi->transfer(buf[i]);
 			}
 #endif
 		}
@@ -391,17 +397,17 @@ uint16_t W5100Class::read(uint16_t addr, uint8_t *buf, uint16_t len)
 		for (uint16_t i=0; i < len; i++) {
 			setSS();
 			#if 1
-			SPI.transfer(0x0F);
-			SPI.transfer(addr >> 8);
-			SPI.transfer(addr & 0xFF);
+			_spi->transfer(0x0F);
+			_spi->transfer(addr >> 8);
+			_spi->transfer(addr & 0xFF);
 			addr++;
-			buf[i] = SPI.transfer(0);
+			buf[i] = _spi->transfer(0);
 			#else
 			cmd[0] = 0x0F;
 			cmd[1] = addr >> 8;
 			cmd[2] = addr & 0xFF;
 			cmd[3] = 0;
-			SPI.transfer(cmd, 4); // TODO: why doesn't this work?
+			_spi->transfer(cmd, 4); // TODO: why doesn't this work?
 			buf[i] = cmd[3];
 			addr++;
 			#endif
@@ -413,9 +419,9 @@ uint16_t W5100Class::read(uint16_t addr, uint8_t *buf, uint16_t len)
 		cmd[1] = addr & 0xFF;
 		cmd[2] = (len >> 8) & 0x7F;
 		cmd[3] = len & 0xFF;
-		SPI.transfer(cmd, 4);
+		_spi->transfer(cmd, 4);
 		memset(buf, 0, len);
-		SPI.transfer(buf, len);
+		_spi->transfer(buf, len);
 		resetSS();
 	} else { // chip == 55
 		setSS();
@@ -457,9 +463,9 @@ uint16_t W5100Class::read(uint16_t addr, uint8_t *buf, uint16_t len)
 			cmd[2] = ((addr >> 6) & 0xE0) | 0x18; // 2K buffers
 			#endif
 		}
-		SPI.transfer(cmd, 3);
+		_spi->transfer(cmd, 3);
 		memset(buf, 0, len);
-		SPI.transfer(buf, len);
+		_spi->transfer(buf, len);
 		resetSS();
 	}
 	return len;
